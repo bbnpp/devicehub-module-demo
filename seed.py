@@ -41,11 +41,15 @@ REASON_STATUS = {"fault": "faulty", "preventive": "removed", "refurb": "refurbis
 
 kitchens = [(1, "강남 본점", 1), (2, "판교 지점", 1), (3, "부산 해운대점", 2)]
 # products: (id, name, serial(R-AG), model(single|dual), 현재 kitchen_id)
+# kitchen_id 가 None 이면 매장 미배치 = 출하 대기(창고) 장비.
 products = [
     (1, "1호기", "R-AG-00045", "single", 3),
     (2, "2호기", "R-AG-00046", "single", 2),
     (3, "3호기", "R-AG-00103", "dual", 3),
+    (4, "4호기", "R-AG-00104", "dual", None),  # 출하 대기(창고) — 매장 미배치, 모듈만 갓 장착
 ]
+WAREHOUSE_PIDS = {p[0] for p in products if p[4] is None}
+WAREHOUSE_INSTALL = dt.datetime(2025, 5, 15).isoformat()  # 출하 대기 장비의 모듈 장착일
 # product -> kitchen 타임라인 (cook_order 생성용). p1 은 리퍼로 k1 -> k3 이동.
 timeline = {
     1: [(dt.date(2023, 6, 1), dt.date(2024, 9, 20), 1), (dt.date(2024, 9, 22), DEMO_NOW, 3)],
@@ -115,11 +119,13 @@ def build(db_path: str):
 
     for (pid, _n, _s, model, _k) in products:
         times = times_by_pid[pid]
+        # 출하 대기 장비는 timeline/cook 이 없어 install_iso 에도 없다 → 창고 장착일로 폴백.
+        base_install = install_iso.get(pid, WAREHOUSE_INSTALL)
         for slot in MODEL_SLOTS[model]:
             pinned = (pid, slot) in PINNED
             starts = _partition_starts(len(times), MODULE_TYPES[slot], pinned)
             for k, sidx in enumerate(starts):
-                vf = install_iso[pid] if k == 0 else times[sidx]
+                vf = base_install if k == 0 else times[sidx]
                 vt = times[starts[k + 1]] if k + 1 < len(starts) else None
                 if vt is None:
                     status, reason, fmode = "installed", None, None
@@ -207,10 +213,11 @@ def validate(db_path: str, cook_rows: list, placements: list) -> None:
     n = len(cook_rows)
     assert 25000 <= n <= 60000, f"cook_order 행 수 비정상: {n}"
 
-    # 장비당 placement(설치/교체 이력) 5~10행
+    # 장비당 placement(설치/교체 이력) 5~10행. 단, 출하 대기 장비는 슬롯당 1개씩 갓 장착이라 슬롯 수만큼.
     per_product = Counter(p[2] for p in placements)
     for pid, c in sorted(per_product.items()):
-        assert 5 <= c <= 11, f"product {pid} placements={c} (5~10 기대)"
+        lo = 1 if pid in WAREHOUSE_PIDS else 5
+        assert lo <= c <= 11, f"product {pid} placements={c} ({lo}~11 기대)"
 
     usage = {r[0]: (r[5], r[6]) for r in cur.execute(USAGE_SQL)}  # mid -> (cooks, pct)
     ptot = dict(cur.execute("SELECT product_id, COUNT(*) FROM cook_order GROUP BY product_id"))
@@ -222,7 +229,8 @@ def validate(db_path: str, cook_rows: list, placements: list) -> None:
         slot_sum[(pid, slot)] += usage[m_id][0]
         placed_ids.add(m_id)
     for (pid, slot), s in slot_sum.items():
-        assert s == ptot[pid], f"{pid}/{slot} 사용량 합 {s} != 장비 총 {ptot[pid]}"
+        # 출하 대기 장비는 cook_order 가 없어 ptot 에 없다 → 0 기대.
+        assert s == ptot.get(pid, 0), f"{pid}/{slot} 사용량 합 {s} != 장비 총 {ptot.get(pid, 0)}"
 
     # 창고 재고(미장착) 0%
     spares = [mid for mid in usage if mid not in placed_ids]
