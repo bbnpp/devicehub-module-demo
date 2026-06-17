@@ -29,7 +29,9 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from schema import DEMO_NOW, MODEL_SLOTS, MODULE_TYPES, demo_db_path  # noqa: E402
+from schema import (  # noqa: E402
+    DEMO_NOW, HW_VERSIONS, MODEL_SLOTS, MODULE_STATUSES, MODULE_TYPES, VENDORS, demo_db_path,
+)
 
 random.seed(42)
 DB = str(demo_db_path())
@@ -37,7 +39,8 @@ DB = str(demo_db_path())
 TYPE_CODE = {"Top Griddle": "TG", "BOT Griddle": "BG", "Manipulator": "MN", "E-Box": "EB"}
 GRIDDLE_TYPES = {"Top Griddle", "BOT Griddle"}
 FAULT_MODES = ["overheat", "wear_limit", "sensor_fault", "thermal_runaway"]
-REASON_STATUS = {"fault": "faulty", "preventive": "removed", "refurb": "refurbished"}
+REASON_STATUS = {"fault": "faulty", "preventive": "serviceable", "refurb": "refurbished", "scrap": "scrapped"}
+SEED_BATCH_ID = 1  # 시드 데이터가 속한 가상 입고 배치
 
 kitchens = [(1, "강남 본점", 1), (2, "판교 지점", 1), (3, "부산 해운대점", 2)]
 # products: (id, name, serial(R-AG), model(single|dual), 현재 kitchen_id)
@@ -110,11 +113,16 @@ def build(db_path: str):
     mid = 0
     pl_id = 0
 
-    def add_module(mtype: str, status: str) -> int:
+    def add_module(mtype: str, status: str, received: str) -> int:
         nonlocal mid
         type_count[mtype] += 1
         mid += 1
-        modules.append([mid, f"SN-{TYPE_CODE[mtype]}-{type_count[mtype]:04d}", mtype, status])
+        vendor_id = random.choice([v[0] for v in VENDORS])
+        hw_rev = random.choice(HW_VERSIONS)
+        modules.append([
+            mid, f"SN-{TYPE_CODE[mtype]}-{type_count[mtype]:04d}", mtype,
+            hw_rev, vendor_id, received, SEED_BATCH_ID, status,
+        ])
         return mid
 
     for (pid, _n, _s, model, _k) in products:
@@ -128,35 +136,47 @@ def build(db_path: str):
                 vf = base_install if k == 0 else times[sidx]
                 vt = times[starts[k + 1]] if k + 1 < len(starts) else None
                 if vt is None:
-                    status, reason, fmode = "installed", None, None
+                    # 장착 중 = 열린 placement(단일 소스). status 컬럼은 "미장착 시 처분"이라
+                    # 양품(serviceable)으로 둔다 — 재고 판정은 "열린 placement 없음"으로 거른다.
+                    status, reason, fmode = "serviceable", None, None
                 else:
                     if slot in GRIDDLE_TYPES:
-                        reason = random.choices(["fault", "preventive"], weights=[0.6, 0.4])[0]
+                        reason = random.choices(["fault", "preventive", "refurb", "scrap"],
+                                                weights=[0.45, 0.3, 0.1, 0.15])[0]
                     else:
-                        reason = "preventive"
-                    fmode = random.choice(FAULT_MODES) if reason == "fault" else None
+                        reason = random.choices(["preventive", "refurb"], weights=[0.8, 0.2])[0]
+                    fmode = random.choice(FAULT_MODES) if reason in ("fault", "scrap") else None
                     status = REASON_STATUS[reason]
-                m_id = add_module(slot, status)
+                m_id = add_module(slot, status, vf[:10])
                 pl_id += 1
                 placements.append((pl_id, m_id, pid, slot, vf, vt, reason, fmode))
 
     # 창고 재고(미장착)
+    SPARE_RECEIVED = "2025-05-20"
     for mtype in MODULE_TYPES:
         for _ in range(SPARES_PER_TYPE):
-            add_module(mtype, "in_stock")
+            add_module(mtype, "serviceable", SPARE_RECEIVED)
 
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(db_path)
     cur = con.cursor()
-    for t in ["cook_order", "module_placements", "modules", "products", "kitchen"]:
+    for t in ["module_audit", "cook_order", "module_placements", "modules", "upload_batch", "vendor", "products", "kitchen"]:
         cur.execute(f"DROP TABLE IF EXISTS {t}")
     cur.executescript(
         """
         CREATE TABLE kitchen (id INTEGER PRIMARY KEY, name TEXT, brand_id INTEGER);
         CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, serial TEXT, model TEXT,
           kitchen_id INTEGER REFERENCES kitchen(id));
+        CREATE TABLE vendor (id INTEGER PRIMARY KEY, name TEXT UNIQUE, code TEXT UNIQUE);
+        CREATE TABLE upload_batch (id INTEGER PRIMARY KEY, file_hash TEXT UNIQUE,
+          source_name TEXT, uploaded_at TEXT, row_count INTEGER);
         CREATE TABLE modules (id INTEGER PRIMARY KEY, serial TEXT UNIQUE, module_type TEXT,
-          status TEXT, rated_life INTEGER);
+          hardware_version TEXT, vendor_id INTEGER REFERENCES vendor(id),
+          received_date TEXT, batch_id INTEGER REFERENCES upload_batch(id),
+          status TEXT, rated_life INTEGER,
+          created_at TEXT, created_by TEXT, updated_at TEXT, updated_by TEXT);
+        CREATE TABLE module_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, module_id INTEGER,
+          serial TEXT, action TEXT, detail TEXT, actor TEXT, ts TEXT);
         CREATE TABLE module_placements (id INTEGER PRIMARY KEY, module_id INTEGER REFERENCES modules(id),
           product_id INTEGER REFERENCES products(id), position_code TEXT,
           valid_from TEXT, valid_to TEXT, removed_reason TEXT, fault_mode TEXT);
@@ -165,10 +185,21 @@ def build(db_path: str):
         """
     )
     cur.executemany("INSERT INTO kitchen VALUES (?,?,?)", kitchens)
+    cur.executemany("INSERT INTO vendor VALUES (?,?,?)", VENDORS)
+    cur.execute(
+        "INSERT INTO upload_batch VALUES (?,?,?,?,?)",
+        (SEED_BATCH_ID, None, "초기 시드 데이터", DEMO_NOW.isoformat(), len(modules)),
+    )
     cur.executemany("INSERT INTO products VALUES (?,?,?,?,?)", products)
     cur.executemany(
-        "INSERT INTO modules VALUES (?,?,?,?,?)",
-        [(i, s, t, st, MODULE_TYPES[t]) for (i, s, t, st) in modules],
+        "INSERT INTO modules VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [(mid, s, t, hw, vid, rcv, bid, st, MODULE_TYPES[t], rcv, "seed", rcv, "seed")
+         for (mid, s, t, hw, vid, rcv, bid, st) in modules],
+    )
+    cur.executemany(
+        "INSERT INTO module_audit(module_id, serial, action, detail, actor, ts) VALUES (?,?,?,?,?,?)",
+        [(mid, s, "insert", f"초기 시드 입고 (status={st})", "seed", rcv)
+         for (mid, s, t, hw, vid, rcv, bid, st) in modules],
     )
     cur.executemany("INSERT INTO module_placements VALUES (?,?,?,?,?,?,?,?)", placements)
     cur.executemany(
@@ -236,6 +267,13 @@ def validate(db_path: str, cook_rows: list, placements: list) -> None:
     spares = [mid for mid in usage if mid not in placed_ids]
     for mid in spares:
         assert usage[mid] == (0, 0.0), f"창고 재고 {mid} 사용량 {usage[mid]}"
+
+    # 단일 소스: status enum 준수('installed'/'removed' 같은 폐기 값이 없어야 한다) + 벤더/배치 채워짐.
+    vids = {v[0] for v in VENDORS}
+    for r in cur.execute("SELECT id, status, vendor_id, batch_id FROM modules"):
+        assert r[1] in MODULE_STATUSES, f"비정상 status: module {r[0]} = {r[1]}"
+        assert r[2] in vids, f"미등록 vendor: module {r[0]} = {r[2]}"
+        assert r[3] is not None, f"batch 누락: module {r[0]}"
 
     # 핵심 모듈: 단일 placement, 두 고객사 누적, 정격 초과
     star = [p for p in placements if (p[2], p[3]) in PINNED]

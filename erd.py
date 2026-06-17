@@ -25,33 +25,116 @@ LINE = "#7d8893"
 
 # 테이블 정의: name -> (category, x, y, [(type, column)])  type: pk|num|text|ts
 TABLES: dict[str, dict] = {
-    "modules": dict(cat="new", x=60, y=120, cols=[
+    "modules": dict(cat="new", x=60, y=80, cols=[
         ("pk", "id"), ("text", "serial"), ("text", "module_type"),
-        ("text", "status"), ("num", "rated_life")]),
-    "module_placements": dict(cat="new", x=440, y=70, cols=[
+        ("text", "hardware_version"), ("num", "vendor_id"), ("ts", "received_date"),
+        ("num", "batch_id"), ("text", "status"), ("num", "rated_life"),
+        ("ts", "created_at"), ("text", "created_by"), ("ts", "updated_at"), ("text", "updated_by")]),
+    "vendor": dict(cat="new", x=60, y=560, cols=[
+        ("pk", "id"), ("text", "name"), ("text", "code")]),
+    "upload_batch": dict(cat="new", x=60, y=730, cols=[
+        ("pk", "id"), ("text", "file_hash"), ("text", "source_name"),
+        ("ts", "uploaded_at"), ("num", "row_count")]),
+    "module_audit": dict(cat="new", x=440, y=400, cols=[
+        ("pk", "id"), ("num", "module_id"), ("text", "serial"),
+        ("text", "action"), ("text", "detail"), ("text", "actor"), ("ts", "ts")]),
+    "module_placements": dict(cat="new", x=440, y=80, cols=[
         ("pk", "id"), ("num", "module_id"), ("num", "product_id"),
         ("text", "position_code"), ("ts", "valid_from"), ("ts", "valid_to"),
         ("text", "removed_reason"), ("text", "fault_mode")]),
-    "products": dict(cat="existing", x=820, y=140, cols=[
+    "products": dict(cat="existing", x=820, y=120, cols=[
         ("pk", "id"), ("text", "serial"), ("text", "name"), ("text", "model"), ("num", "kitchen_id")]),
-    "kitchen": dict(cat="existing", x=820, y=480, cols=[
+    "kitchen": dict(cat="existing", x=820, y=470, cols=[
         ("pk", "id"), ("text", "name"), ("num", "brand_id")]),
-    "cook_order": dict(cat="existing", x=440, y=480, cols=[
+    "cook_order": dict(cat="existing", x=440, y=700, cols=[
         ("pk", "id"), ("num", "product_id"), ("num", "kitchen_id"),
         ("num", "recipe_id"), ("ts", "started_at"), ("ts", "ended_at")]),
+}
+
+# 컬럼 설명 — 다이어그램 hover 툴팁 + ERD 페이지 '컬럼 설명' 표에서 쓰인다.
+DESCRIPTIONS: dict[str, dict[str, str]] = {
+    "modules": {
+        "id": "내부 PK(서러게이트)",
+        "serial": "모듈 시리얼번호 — 전역 유니크",
+        "module_type": "모듈 종류(=슬롯 위치)",
+        "hardware_version": "하드웨어 버전(기록용, 예: 1.2/1.3) — 장착 판정엔 미반영",
+        "vendor_id": "공급사 FK → vendor.id",
+        "received_date": "입고일",
+        "batch_id": "입고 배치 FK → upload_batch.id",
+        "status": "컨디션: serviceable/refurbished/faulty/scrapped (장착 여부는 placement로 판정)",
+        "rated_life": "정격수명(총 조리 횟수 기준)",
+        "created_at": "등록 시각(감사)",
+        "created_by": "등록 작업자(감사)",
+        "updated_at": "최종 수정 시각(감사)",
+        "updated_by": "최종 수정 작업자(감사)",
+    },
+    "vendor": {
+        "id": "PK",
+        "name": "공급사명 — 유니크",
+        "code": "공급사 코드 — 유니크",
+    },
+    "upload_batch": {
+        "id": "PK",
+        "file_hash": "업로드 파일 해시 — 유니크(동일 파일 중복 제출 차단)",
+        "source_name": "출처(파일명 / '개별 추가' / '초기 시드')",
+        "uploaded_at": "업로드 시각",
+        "row_count": "이 배치로 등록된 건수",
+    },
+    "module_audit": {
+        "id": "PK(자동증가)",
+        "module_id": "대상 모듈 id — FK 아님(삭제돼도 감사행 보존)",
+        "serial": "당시 시리얼 스냅샷",
+        "action": "insert / update / delete",
+        "detail": "변경 내용 요약",
+        "actor": "작업자",
+        "ts": "발생 시각",
+    },
+    "module_placements": {
+        "id": "PK",
+        "module_id": "모듈 FK → modules.id",
+        "product_id": "장비 FK → products.id",
+        "position_code": "슬롯(=모듈 종류)",
+        "valid_from": "장착 시각",
+        "valid_to": "탈거 시각 — NULL이면 현재 장착 중",
+        "removed_reason": "탈거 사유: fault/preventive/refurb/scrap",
+        "fault_mode": "고장 모드(고장 탈거 시)",
+    },
+    "products": {
+        "id": "PK",
+        "serial": "장비 시리얼",
+        "name": "장비명(예: 1호기)",
+        "model": "모델(single/dual)",
+        "kitchen_id": "현재 매장 FK → kitchen.id (NULL=출하대기/창고)",
+    },
+    "kitchen": {
+        "id": "PK",
+        "name": "매장(고객사)명",
+        "brand_id": "브랜드 id",
+    },
+    "cook_order": {
+        "id": "PK(자동증가)",
+        "product_id": "장비 FK → products.id",
+        "kitchen_id": "조리 발생 매장 FK → kitchen.id",
+        "recipe_id": "레시피 id",
+        "started_at": "조리 시작 시각",
+        "ended_at": "조리 종료 시각",
+    },
 }
 
 # 관계: (src_table, src_col, src_side, dst_table, dst_col, dst_side)
 RELS = [
     ("module_placements", "module_id", "left", "modules", "id", "right"),
     ("module_placements", "product_id", "right", "products", "id", "left"),
+    ("modules", "vendor_id", "left", "vendor", "id", "left"),
+    ("modules", "batch_id", "left", "upload_batch", "id", "left"),
+    ("module_audit", "module_id", "left", "modules", "id", "right"),
     ("products", "kitchen_id", "left", "kitchen", "id", "left"),
     ("cook_order", "product_id", "right", "products", "id", "left"),
     ("cook_order", "kitchen_id", "right", "kitchen", "id", "left"),
 ]
 
 CANVAS_W = 1160
-CANVAS_H = 740
+CANVAS_H = 960
 
 
 def _card_h(t: dict) -> int:
@@ -123,6 +206,13 @@ def _card(name: str, t: dict) -> str:
             f'font-size="13" font-weight="{700 if is_pk else 400}" '
             f'font-family="-apple-system, Helvetica, Arial, sans-serif">{_esc(col)}</text>'
         )
+        desc = DESCRIPTIONS.get(name, {}).get(col, "")
+        if desc:
+            rtop = y + HEADER_H + i * ROW_H
+            parts.append(
+                f'<rect x="{x}" y="{rtop}" width="{CARD_W}" height="{ROW_H}" fill="transparent">'
+                f'<title>{_esc(col)} — {_esc(desc)}</title></rect>'
+            )
     # card border on top
     parts.append(f'<rect x="{x}" y="{y}" width="{CARD_W}" height="{h}" rx="7" fill="none" stroke="{color}" stroke-width="1.6"/>')
     return "".join(parts)
@@ -168,4 +258,4 @@ def erd_html() -> str:
     )
 
 
-ERD_HEIGHT = 660
+ERD_HEIGHT = 840

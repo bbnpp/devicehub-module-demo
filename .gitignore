@@ -1,3 +1,5 @@
 __pycache__/
 *.pyc
 demo_data/
+README.md
+.DS_Store

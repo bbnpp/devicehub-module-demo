@@ -26,6 +26,30 @@ MODULE_TYPES = {
     "E-Box": 20000,
 }
 
+# 모듈 컨디션(condition). status 는 "물건의 상태"만 표현한다 — 위치(장착 여부·어느 장비)는 여기
+# 없다. 위치는 module_placements 의 열린 행(valid_to IS NULL)으로만 판정한다(단일 소스).
+#   serviceable : 정상 양품 — 장착 가능
+#   refurbished : 수리/리퍼 후 재사용 가능 — 장착 가능
+#   faulty      : 고장, 수리 전 — 장착 불가
+#   scrapped    : 폐기(수명 도과 등) 종착 — 장착 불가
+# "재고(in stock)"는 저장값이 아니라 파생이다: 위치=창고 ∧ status ∈ INSTALLABLE_STATUSES.
+# (기존 'removed' = 예방탈거된 양품 = 다시 가용 → serviceable 로 흡수. 탈거 사실은
+#  module_placements.removed_reason 이력에 남는다.)
+MODULE_STATUSES = ("serviceable", "refurbished", "faulty", "scrapped")
+# 장착 가능 컨디션(여기에 더해 "현재 열린 placement 없음" 조건은 쿼리에서 확인한다).
+INSTALLABLE_STATUSES = ("serviceable", "refurbished")
+
+# 등록 벤더 마스터(데모용). 실서비스에선 외부 시스템에서 관리되며, 업로드 시 이 목록에 없는
+# 벤더는 거부한다. (id, 이름, 코드)
+VENDORS = [
+    (1, "Acme Components", "ACM"),
+    (2, "한화정밀", "HWP"),
+    (3, "대양로보틱스", "DYR"),
+]
+
+# 하드웨어 버전(hardware_version) — 인스턴스에 기록만 한다(장착 가능 판정엔 미반영). 예시값 1.2 / 1.3. §결정
+HW_VERSIONS = ["1.2", "1.3"]
+
 # model 별로 "존재하는 모듈 종류" 목록. 이 종류명이 곧 위치 코드(position_code)다.
 # model 은 single / dual 두 종류(라벨). 모듈 구성은 동일하며(Top/BOT Griddle·Manipulator·E-Box
 # 각 1개), 구분은 모듈 구성이 아닌 다른 속성(처리량 등)이다. 종류별 1개씩이라 position_code = 모듈 종류.
