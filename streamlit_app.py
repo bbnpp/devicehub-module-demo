@@ -264,14 +264,14 @@ if not Path(DB).exists():
 # 화면을 두 그룹으로 분리한다.
 #   ✏️ 입력/수정 — 업무 flow 순서(재고 → 조립 → 정비). 이 데모의 핵심.
 #   📄 조회/분석 — 분석·참고용(보조).
-EDIT_PAGES = ["재고 현황 및 관리", "제품 조립", "장비 정비"]
+EDIT_PAGES = ["모듈 입고", "모듈 현황 및 관리", "제품 조립", "장비 정비"]
 VIEW_PAGES = ["장비 상세", "매장 상세", "모듈 상세", "모듈 Fleet 개요", "ERD"]
 PAGES = EDIT_PAGES + VIEW_PAGES
 
 # 예약된 화면 이동을 라디오/셀렉트박스가 만들어지기 전에 반영한다(위젯 key 충돌 방지).
 _apply_pending_nav()
 if "page" not in st.session_state:
-    st.session_state["page"] = EDIT_PAGES[0]
+    st.session_state["page"] = "모듈 현황 및 관리"
 
 
 def _pick_edit() -> None:
@@ -286,7 +286,7 @@ def _pick_view() -> None:
 
 _cur = st.session_state["page"]
 st.sidebar.markdown("### ✏️ 입력 / 수정")
-st.sidebar.caption("재고 → 조립 → 정비 (업무 순서)")
+st.sidebar.caption("입고 → 현황·관리 → 조립 → 정비 (업무 순서)")
 st.sidebar.radio(
     "입력/수정 화면", EDIT_PAGES, key="nav_edit",
     index=EDIT_PAGES.index(_cur) if _cur in EDIT_PAGES else None,
@@ -601,12 +601,12 @@ elif page == "모듈 상세":
             c[4].write(r.reason if pd.notna(r.reason) else "—")
             c[5].write(r.fmode if pd.notna(r.fmode) else "—")
 
-# ================================ 4. 재고 현황 및 관리 ================================
-elif page == "재고 현황 및 관리":
-    st.title("✏️ 재고 현황 및 관리")
+# ================================ 4a. 모듈 입고 ================================
+elif page == "모듈 입고":
+    st.title("✏️ 모듈 입고 — 공급사 모듈 재고 등록")
     st.caption(
-        "모듈 재고를 한눈에 보고(기본 테이블), 추가·수정·삭제·벌크 업로드까지 한 화면에서. "
-        "정책상 **막힌 행동**은 '🚫 정책·제약' 탭에서 글/시뮬레이션으로 확인할 수 있다."
+        "공급사로부터 받은 모듈을 재고로 **입고**한다(담당자가 분리될 수 있는 별도 업무). "
+        "벌크 CSV 또는 개별 추가. 조회·수정·수리/폐기는 '모듈 현황 및 관리'에서."
     )
     vdf = q("SELECT id, name, code FROM vendor ORDER BY id")
     name2id = {r.name: int(r.id) for r in vdf.itertuples()}
@@ -614,63 +614,7 @@ elif page == "재고 현황 및 관리":
     vid2label = {int(r.id): f"{r.name} ({r.code})" for r in vdf.itertuples()}
     vendor_help = " · ".join(f"{n}({c})" for n, c in zip(vdf.name, vdf.code))
 
-    tab_view, tab_bulk, tab_one, tab_edit, tab_del, tab_fix, tab_audit, tab_pol = st.tabs(
-        ["📊 재고 현황", "📥 벌크 업로드", "➕ 개별 추가", "✏️ 수정", "🗑️ 삭제",
-         "🔧 수리·폐기", "🧾 감사 로그", "🚫 정책·제약"]
-    )
-
-    # ----- 재고 현황(기본 테이블 뷰) -----
-    with tab_view:
-        inv = q(
-            """SELECT m.id, m.serial, m.module_type AS 종류, m.hardware_version AS hardware_version,
-                      v.code AS 공급사, m.received_date AS 입고일, m.batch_id AS 배치,
-                      m.status AS 상태, p.name AS 장착장비
-               FROM modules m
-               LEFT JOIN vendor v ON v.id = m.vendor_id
-               LEFT JOIN module_placements op ON op.module_id = m.id AND op.valid_to IS NULL
-               LEFT JOIN products p ON p.id = op.product_id
-               ORDER BY m.serial"""
-        )
-        inv = inv.merge(q(USAGE_SQL)[["id", "pct_used"]], on="id", how="left")
-        inv["설치"] = inv["장착장비"].notna()
-        # 상태(condition) 와 위치(location) 는 직교한다 → 컬럼을 분리한다.
-        #   상태 = modules.status 에 저장된 처분값 (serviceable/refurbished/faulty/scrapped)
-        #   위치 = module_placements(열린 행)에서 파생 — 저장하지 않는다(단일 소스).
-        inv["위치"] = inv.apply(lambda r: f"🔧 {r['장착장비']}" if r["설치"] else "📦 창고", axis=1)
-        inv["사용률%"] = inv["pct_used"]
-
-        installable = inv["상태"].isin(list(INSTALLABLE_STATUSES)) & ~inv["설치"]
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("총 모듈", len(inv))
-        m2.metric("가용 재고", int(installable.sum()))
-        m3.metric("장착 중", int(inv["설치"].sum()))
-        m4.metric("고장(faulty)", int((inv["상태"] == "faulty").sum()))
-        m5.metric("폐기(scrapped)", int((inv["상태"] == "scrapped").sum()))
-
-        f1, f2, f3, f4 = st.columns(4)
-        f_type = f1.multiselect("종류", list(MODULE_TYPES))
-        f_status = f2.multiselect("상태", ["serviceable", "refurbished", "faulty", "scrapped"])
-        f_loc = f3.multiselect("위치", ["창고", "장착"])
-        f_q = f4.text_input("serial 검색")
-        view = inv
-        if f_type:
-            view = view[view["종류"].isin(f_type)]
-        if f_status:
-            view = view[view["상태"].isin(f_status)]
-        if f_loc and not ({"창고", "장착"} <= set(f_loc)):
-            view = view[view["설치"]] if "장착" in f_loc else view[~view["설치"]]
-        if f_q:
-            view = view[view["serial"].str.contains(f_q, case=False, na=False)]
-        st.caption(
-            "**상태**=컨디션(condition) · **위치**=`module_placements` 파생(장착 여부·장비) · "
-            "**hardware_version**=하드웨어 버전(기록용 — 장착/호환 판정엔 미반영)"
-        )
-        st.caption(f"{len(view)} / {len(inv)} 건")
-        st.dataframe(
-            view[["serial", "종류", "hardware_version", "공급사", "입고일", "배치", "상태", "위치", "사용률%"]]
-            .style.map(_red_over_100, subset=["사용률%"]),
-            width="stretch", hide_index=True,
-        )
+    tab_bulk, tab_one = st.tabs(["📥 벌크 업로드", "➕ 개별 추가"])
 
     # ----- 벌크 업로드 -----
     with tab_bulk:
@@ -773,6 +717,77 @@ elif page == "재고 현황 및 관리":
             else:
                 bid = insert_modules(None, "개별 추가", [(s, one_type, one_hw, one_vid, one_rcv.isoformat())], actor)
                 st.success(f"배치 #{bid} 로 {s} 입고 완료 (status=serviceable).")
+
+
+# ================================ 4b. 모듈 현황 및 관리 ================================
+elif page == "모듈 현황 및 관리":
+    st.title("✏️ 모듈 현황 및 관리")
+    st.caption(
+        "전체 모듈 재고 조회 + 수정·삭제·수리/폐기·감사 로그 관리. "
+        "신규 입고(벌크/개별)는 '모듈 입고'에서. 정책상 막힌 행동은 '🚫 정책·제약' 탭 참고."
+    )
+    vdf = q("SELECT id, name, code FROM vendor ORDER BY id")
+    name2id = {r.name: int(r.id) for r in vdf.itertuples()}
+    code2id = {r.code: int(r.id) for r in vdf.itertuples()}
+    vid2label = {int(r.id): f"{r.name} ({r.code})" for r in vdf.itertuples()}
+    vendor_help = " · ".join(f"{n}({c})" for n, c in zip(vdf.name, vdf.code))
+
+    tab_view, tab_edit, tab_del, tab_fix, tab_audit, tab_pol = st.tabs(
+        ["📊 재고 현황", "✏️ 수정", "🗑️ 삭제", "🔧 수리·폐기", "🧾 감사 로그", "🚫 정책·제약"]
+    )
+
+    # ----- 재고 현황(기본 테이블 뷰) -----
+    with tab_view:
+        inv = q(
+            """SELECT m.id, m.serial, m.module_type AS 종류, m.hardware_version AS hardware_version,
+                      v.code AS 공급사, m.received_date AS 입고일, m.batch_id AS 배치,
+                      m.status AS 상태, p.name AS 장착장비
+               FROM modules m
+               LEFT JOIN vendor v ON v.id = m.vendor_id
+               LEFT JOIN module_placements op ON op.module_id = m.id AND op.valid_to IS NULL
+               LEFT JOIN products p ON p.id = op.product_id
+               ORDER BY m.serial"""
+        )
+        inv = inv.merge(q(USAGE_SQL)[["id", "pct_used"]], on="id", how="left")
+        inv["설치"] = inv["장착장비"].notna()
+        # 상태(condition) 와 위치(location) 는 직교한다 → 컬럼을 분리한다.
+        #   상태 = modules.status 에 저장된 처분값 (serviceable/refurbished/faulty/scrapped)
+        #   위치 = module_placements(열린 행)에서 파생 — 저장하지 않는다(단일 소스).
+        inv["위치"] = inv.apply(lambda r: f"🔧 {r['장착장비']}" if r["설치"] else "📦 창고", axis=1)
+        inv["사용률%"] = inv["pct_used"]
+
+        installable = inv["상태"].isin(list(INSTALLABLE_STATUSES)) & ~inv["설치"]
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("총 모듈", len(inv))
+        m2.metric("가용 재고", int(installable.sum()))
+        m3.metric("장착 중", int(inv["설치"].sum()))
+        m4.metric("고장(faulty)", int((inv["상태"] == "faulty").sum()))
+        m5.metric("폐기(scrapped)", int((inv["상태"] == "scrapped").sum()))
+
+        f1, f2, f3, f4 = st.columns(4)
+        f_type = f1.multiselect("종류", list(MODULE_TYPES))
+        f_status = f2.multiselect("상태", ["serviceable", "refurbished", "faulty", "scrapped"])
+        f_loc = f3.multiselect("위치", ["창고", "장착"])
+        f_q = f4.text_input("serial 검색")
+        view = inv
+        if f_type:
+            view = view[view["종류"].isin(f_type)]
+        if f_status:
+            view = view[view["상태"].isin(f_status)]
+        if f_loc and not ({"창고", "장착"} <= set(f_loc)):
+            view = view[view["설치"]] if "장착" in f_loc else view[~view["설치"]]
+        if f_q:
+            view = view[view["serial"].str.contains(f_q, case=False, na=False)]
+        st.caption(
+            "**상태**=컨디션(condition) · **위치**=`module_placements` 파생(장착 여부·장비) · "
+            "**hardware_version**=하드웨어 버전(기록용 — 장착/호환 판정엔 미반영)"
+        )
+        st.caption(f"{len(view)} / {len(inv)} 건")
+        st.dataframe(
+            view[["serial", "종류", "hardware_version", "공급사", "입고일", "배치", "상태", "위치", "사용률%"]]
+            .style.map(_red_over_100, subset=["사용률%"]),
+            width="stretch", hide_index=True,
+        )
 
     # ----- 수정 (인플레이스 정정) -----
     with tab_edit:
@@ -1023,10 +1038,9 @@ elif page == "제품 조립":
         "조립된 제품은 **출하 대기(창고)** 상태로 생성된다(고객 인도는 별도 단계). "
         "장착은 placement 로만 기록(재고 status 불변), 장착된 모듈은 재고에서 빠진다."
     )
-    c1, c2, c3 = st.columns(3)
-    a_name = c1.text_input("제품명", value="신규호기")
-    a_serial = c2.text_input("제품 serial", placeholder="예: R-AG-00200")
-    a_model = c3.selectbox("model", list(MODEL_SLOTS))
+    c1, c2 = st.columns(2)
+    a_serial = c1.text_input("제품 serial", placeholder="예: R-AG-00200")
+    a_model = c2.selectbox("model", list(MODEL_SLOTS))
     a_date = st.date_input("조립일", value=DEMO_NOW)
 
     st.subheader(f"모듈 구성 (model={a_model}) — 모든 슬롯 필수")
@@ -1037,7 +1051,7 @@ elif page == "제품 조립":
         cc = st.columns([2, 5])
         cc[0].write(f"🔩 **{slot}**")
         if inv.empty:
-            cc[1].warning(f"가용 재고 없음 — '재고 현황 및 관리'에서 입고 후 조립 가능")
+            cc[1].warning(f"가용 재고 없음 — '모듈 입고'에서 입고 후 조립 가능")
             all_ok = False
         else:
             iset = inv.set_index("id")
@@ -1056,7 +1070,7 @@ elif page == "제품 조립":
         st.info("재고가 없는 슬롯이 있어 아직 조립할 수 없습니다.")
     ready = all_ok and bool(s) and not serial_dup
     if st.button("조립 완료", type="primary", disabled=not ready):
-        pid = assemble_product(a_name.strip() or "신규호기", s, a_model, slot_choice, a_date)
+        pid = assemble_product(s, s, a_model, slot_choice, a_date)  # 제품명=serial(별도 제품명 없음)
         st.success(
             f"제품 #{pid} ({s}, {a_model}) 조립 완료 — {len(slot_choice)}개 모듈 장착, 출하 대기(창고) 상태."
         )
