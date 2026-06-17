@@ -34,7 +34,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 import seed as seedmod  # noqa: E402  (재시드 버튼용)
-from schema import (  # noqa: E402
+from module_schema import (  # noqa: E402  (PyPI 'schema' 패키지와 충돌 방지로 모듈명 변경)
     DEMO_NOW, HW_VERSIONS, INSTALLABLE_STATUSES, MODEL_SLOTS, MODULE_TYPES, demo_db_path, slots_for,
 )
 

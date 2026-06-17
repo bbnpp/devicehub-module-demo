@@ -29,7 +29,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from schema import (  # noqa: E402
+from module_schema import (  # noqa: E402  (PyPI 'schema' 패키지와 충돌 방지로 모듈명 변경)
     DEMO_NOW, HW_VERSIONS, MODEL_SLOTS, MODULE_STATUSES, MODULE_TYPES, VENDORS, demo_db_path,
 )
 
