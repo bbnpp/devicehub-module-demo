@@ -170,13 +170,13 @@ def build(db_path: str):
         CREATE TABLE vendor (id INTEGER PRIMARY KEY, name TEXT UNIQUE, code TEXT UNIQUE);
         CREATE TABLE upload_batch (id INTEGER PRIMARY KEY, file_hash TEXT UNIQUE,
           source_name TEXT, uploaded_at TEXT, row_count INTEGER);
-        CREATE TABLE modules (id INTEGER PRIMARY KEY, serial TEXT UNIQUE, module_type TEXT,
+        CREATE TABLE modules (id INTEGER PRIMARY KEY, module_serial TEXT UNIQUE, module_type TEXT,
           hardware_version TEXT, vendor_id INTEGER REFERENCES vendor(id),
           received_date TEXT, batch_id INTEGER REFERENCES upload_batch(id),
           status TEXT, rated_life INTEGER,
           created_at TEXT, created_by TEXT, updated_at TEXT, updated_by TEXT);
         CREATE TABLE module_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, module_id INTEGER,
-          serial TEXT, action TEXT, detail TEXT, actor TEXT, ts TEXT);
+          module_serial TEXT, action TEXT, detail TEXT, actor TEXT, ts TEXT);
         CREATE TABLE module_placements (id INTEGER PRIMARY KEY, module_id INTEGER REFERENCES modules(id),
           product_id INTEGER REFERENCES products(id), position_code TEXT,
           valid_from TEXT, valid_to TEXT, removed_reason TEXT, fault_mode TEXT);
@@ -197,7 +197,7 @@ def build(db_path: str):
          for (mid, s, t, hw, vid, rcv, bid, st) in modules],
     )
     cur.executemany(
-        "INSERT INTO module_audit(module_id, serial, action, detail, actor, ts) VALUES (?,?,?,?,?,?)",
+        "INSERT INTO module_audit(module_id, module_serial, action, detail, actor, ts) VALUES (?,?,?,?,?,?)",
         [(mid, s, "insert", f"초기 시드 입고 (status={st})", "seed", rcv)
          for (mid, s, t, hw, vid, rcv, bid, st) in modules],
     )
@@ -212,7 +212,7 @@ def build(db_path: str):
 
 
 USAGE_SQL = """
-SELECT m.id, m.serial, m.module_type, m.status, m.rated_life,
+SELECT m.id, m.module_serial, m.module_type, m.status, m.rated_life,
        COUNT(co.id) AS total_cooks,
        ROUND(100.0*COUNT(co.id)/m.rated_life, 1) AS pct_used
 FROM modules m

@@ -119,7 +119,7 @@ def nav_button(label: str, page: str, *, key: str, ctx: str,
 
 
 USAGE_SQL = """
-SELECT m.id, m.serial, m.module_type,
+SELECT m.id, m.module_serial, m.module_type,
        CASE WHEN EXISTS (SELECT 1 FROM module_placements o
                          WHERE o.module_id = m.id AND o.valid_to IS NULL)
             THEN 'installed' ELSE m.status END AS status,
@@ -138,7 +138,7 @@ GROUP BY m.id ORDER BY pct_used DESC
 def current_slots(product_id: int) -> dict[str, tuple[int, str]]:
     """현재 장착(valid_to IS NULL) 중인 모듈 종류 -> (module_id, serial)."""
     cur = q(
-        """SELECT mp.position_code, m.id, m.serial
+        """SELECT mp.position_code, m.id, m.module_serial AS serial
            FROM module_placements mp JOIN modules m ON m.id = mp.module_id
            WHERE mp.product_id = ? AND mp.valid_to IS NULL""",
         (int(product_id),),
@@ -153,10 +153,10 @@ def free_inventory(module_type: str) -> pd.DataFrame:
     """
     placeholders = ",".join("?" * len(INSTALLABLE_STATUSES))
     return q(
-        f"""SELECT id, serial, status FROM modules
+        f"""SELECT id, module_serial AS serial, status FROM modules
             WHERE module_type = ? AND status IN ({placeholders})
               AND id NOT IN (SELECT module_id FROM module_placements WHERE valid_to IS NULL)
-            ORDER BY serial""",
+            ORDER BY module_serial""",
         (module_type, *INSTALLABLE_STATUSES),
     )
 
@@ -187,7 +187,7 @@ def audit_stmt(module_id: int | None, serial: str, action: str, detail: str, act
     module_id 는 FK 가 아니다 — 삭제된 모듈의 감사행도 보존되도록.
     """
     return (
-        "INSERT INTO module_audit(module_id, serial, action, detail, actor, ts) VALUES (?,?,?,?,?,?)",
+        "INSERT INTO module_audit(module_id, module_serial, action, detail, actor, ts) VALUES (?,?,?,?,?,?)",
         (module_id, serial, action, detail, actor, now_iso()),
     )
 
@@ -208,15 +208,15 @@ def insert_modules(file_hash: str | None, source: str, rows: list[tuple], actor:
         )
         bid = cur.lastrowid
         cur.executemany(
-            "INSERT INTO modules(serial, module_type, hardware_version, vendor_id, received_date, "
+            "INSERT INTO modules(module_serial, module_type, hardware_version, vendor_id, received_date, "
             "batch_id, status, rated_life, created_at, created_by, updated_at, updated_by) "
             "VALUES (?,?,?,?,?,?, 'serviceable', ?, ?, ?, ?, ?)",
             [(s, t, hw, vid, rcv, bid, MODULE_TYPES[t], ts, actor, ts, actor)
              for (s, t, hw, vid, rcv) in rows],
         )
         cur.executemany(
-            "INSERT INTO module_audit(module_id, serial, action, detail, actor, ts) "
-            "SELECT id, serial, 'insert', ?, ?, ? FROM modules WHERE serial = ?",
+            "INSERT INTO module_audit(module_id, module_serial, action, detail, actor, ts) "
+            "SELECT id, module_serial, 'insert', ?, ?, ? FROM modules WHERE module_serial = ?",
             [(f"입고 (배치 #{bid}, {source})", actor, ts, s) for (s, t, hw, vid, rcv) in rows],
         )
         con.commit()
@@ -472,7 +472,7 @@ elif page == "장비 상세":
     st.subheader("설치 / 교체 이력")
     st.caption("초기 설치(현재 장착 포함)부터 전체. 시리얼을 클릭하면 모듈 상세로 이동합니다.")
     hist = q(
-        """SELECT mp.id AS pl_id, m.id AS module_id, mp.position_code AS slot, m.serial AS serial,
+        """SELECT mp.id AS pl_id, m.id AS module_id, mp.position_code AS slot, m.module_serial AS serial,
                   mp.valid_from AS vf, mp.valid_to AS vt,
                   mp.removed_reason AS reason, mp.fault_mode AS fmode
            FROM module_placements mp JOIN modules m ON m.id = mp.module_id
@@ -506,10 +506,10 @@ elif page == "모듈 상세":
     )
 
     mods = q(
-        """SELECT m.id, m.serial, m.module_type, m.hardware_version, m.received_date,
+        """SELECT m.id, m.module_serial AS serial, m.module_type, m.hardware_version, m.received_date,
                   m.status, m.rated_life, v.name AS vendor,
                   m.created_at, m.created_by, m.updated_at, m.updated_by
-           FROM modules m LEFT JOIN vendor v ON v.id = m.vendor_id ORDER BY m.serial"""
+           FROM modules m LEFT JOIN vendor v ON v.id = m.vendor_id ORDER BY m.module_serial"""
     )
     minfo = mods.set_index("id")
     mid = int(st.selectbox("모듈", mods.id, key="sel_module",
@@ -619,13 +619,13 @@ elif page == "모듈 입고":
     # ----- 벌크 업로드 -----
     with tab_bulk:
         st.markdown(
-            "CSV 컬럼: **serial · module_type · vendor**(이름 또는 코드) · *hardware_version*(선택) · "
+            "CSV 컬럼: **module_serial · module_type · vendor**(이름 또는 코드) · *hardware_version*(선택) · "
             "*received_date*(선택, `YYYY-MM-DD`, 비우면 오늘)"
         )
         st.caption(f"허용 종류: {', '.join(MODULE_TYPES)}  |  등록 벤더: {vendor_help}")
         st.download_button(
             "CSV 템플릿",
-            "serial,module_type,vendor,hardware_version,received_date\n"
+            "module_serial,module_type,vendor,hardware_version,received_date\n"
             "SN-TG-9001,Top Griddle,ACM,1.2,2025-06-10\n",
             "module_upload_template.csv", "text/csv",
         )
@@ -643,14 +643,14 @@ elif page == "모듈 입고":
                     df.columns = [c.strip().lower() for c in df.columns]
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"CSV 파싱 실패: {exc}")
-                missing = {"serial", "module_type", "vendor"} - set(df.columns) if df is not None else set()
+                missing = {"module_serial", "module_type", "vendor"} - set(df.columns) if df is not None else set()
                 if df is not None and missing:
                     st.error(f"필수 컬럼 누락: {', '.join(sorted(missing))}")
                 elif df is not None:
-                    existing = set(q("SELECT serial FROM modules").serial)
+                    existing = set(q("SELECT module_serial AS serial FROM modules").serial)
                     rows, errs, seen = [], [], set()
                     for i, r in df.iterrows():
-                        serial = str(r.get("serial", "")).strip()
+                        serial = str(r.get("module_serial", "")).strip()
                         mtype = str(r.get("module_type", "")).strip()
                         vend = str(r.get("vendor", "")).strip()
                         hw = str(r.get("hardware_version", "")).strip()
@@ -675,7 +675,7 @@ elif page == "모듈 입고":
                         else:
                             rcv = DEMO_NOW.isoformat()
                         if e:
-                            errs.append({"행(헤더=1)": i + 2, "serial": serial, "오류": "; ".join(e)})
+                            errs.append({"행(헤더=1)": i + 2, "module_serial": serial, "오류": "; ".join(e)})
                         else:
                             seen.add(serial)
                             rows.append((serial, mtype, hw, vid, rcv))
@@ -687,11 +687,11 @@ elif page == "모듈 입고":
                         st.warning("처리할 행이 없습니다.")
                     else:
                         prev = pd.DataFrame(
-                            rows, columns=["serial", "module_type", "hardware_version", "vendor_id", "received_date"]
+                            rows, columns=["module_serial", "module_type", "hardware_version", "vendor_id", "received_date"]
                         )
                         prev["vendor"] = prev.vendor_id.map(vid2label)
                         st.dataframe(
-                            prev[["serial", "module_type", "hardware_version", "vendor", "received_date"]],
+                            prev[["module_serial", "module_type", "hardware_version", "vendor", "received_date"]],
                             width="stretch",
                         )
                         if st.button(f"{len(rows)}개 입고 등록", type="primary"):
@@ -701,7 +701,7 @@ elif page == "모듈 입고":
     # ----- 개별 추가 -----
     with tab_one:
         c1, c2 = st.columns(2)
-        one_serial = c1.text_input("serial (전역 유니크)")
+        one_serial = c1.text_input("module_serial (전역 유니크)")
         one_type = c2.selectbox("module_type", list(MODULE_TYPES))
         c3, c4, c5 = st.columns(3)
         one_vlabel = c3.selectbox("vendor", list(vid2label.values()))
@@ -712,7 +712,7 @@ elif page == "모듈 입고":
             s = one_serial.strip()
             if not s:
                 st.error("serial 을 입력하세요.")
-            elif not q("SELECT 1 FROM modules WHERE serial = ?", (s,)).empty:
+            elif not q("SELECT 1 FROM modules WHERE module_serial = ?", (s,)).empty:
                 st.error(f"이미 존재하는 serial: {s}")
             else:
                 bid = insert_modules(None, "개별 추가", [(s, one_type, one_hw, one_vid, one_rcv.isoformat())], actor)
@@ -739,14 +739,14 @@ elif page == "모듈 현황 및 관리":
     # ----- 재고 현황(기본 테이블 뷰) -----
     with tab_view:
         inv = q(
-            """SELECT m.id, m.serial, m.module_type AS 종류, m.hardware_version AS hardware_version,
+            """SELECT m.id, m.module_serial, m.module_type AS 종류, m.hardware_version AS hardware_version,
                       v.code AS 공급사, m.received_date AS 입고일, m.batch_id AS 배치,
                       m.status AS 상태, p.name AS 장착장비
                FROM modules m
                LEFT JOIN vendor v ON v.id = m.vendor_id
                LEFT JOIN module_placements op ON op.module_id = m.id AND op.valid_to IS NULL
                LEFT JOIN products p ON p.id = op.product_id
-               ORDER BY m.serial"""
+               ORDER BY m.module_serial"""
         )
         inv = inv.merge(q(USAGE_SQL)[["id", "pct_used"]], on="id", how="left")
         inv["설치"] = inv["장착장비"].notna()
@@ -768,7 +768,7 @@ elif page == "모듈 현황 및 관리":
         f_type = f1.multiselect("종류", list(MODULE_TYPES))
         f_status = f2.multiselect("상태", ["serviceable", "refurbished", "faulty", "scrapped"])
         f_loc = f3.multiselect("위치", ["창고", "장착"])
-        f_q = f4.text_input("serial 검색")
+        f_q = f4.text_input("module_serial 검색")
         view = inv
         if f_type:
             view = view[view["종류"].isin(f_type)]
@@ -777,14 +777,14 @@ elif page == "모듈 현황 및 관리":
         if f_loc and not ({"창고", "장착"} <= set(f_loc)):
             view = view[view["설치"]] if "장착" in f_loc else view[~view["설치"]]
         if f_q:
-            view = view[view["serial"].str.contains(f_q, case=False, na=False)]
+            view = view[view["module_serial"].str.contains(f_q, case=False, na=False)]
         st.caption(
             "**상태**=컨디션(condition) · **위치**=`module_placements` 파생(장착 여부·장비) · "
             "**hardware_version**=하드웨어 버전(기록용 — 장착/호환 판정엔 미반영)"
         )
         st.caption(f"{len(view)} / {len(inv)} 건")
         st.dataframe(
-            view[["serial", "종류", "hardware_version", "공급사", "입고일", "배치", "상태", "위치", "사용률%"]]
+            view[["module_serial", "종류", "hardware_version", "공급사", "입고일", "배치", "상태", "위치", "사용률%"]]
             .style.map(_red_over_100, subset=["사용률%"]),
             width="stretch", hide_index=True,
         )
@@ -792,12 +792,12 @@ elif page == "모듈 현황 및 관리":
     # ----- 수정 (인플레이스 정정) -----
     with tab_edit:
         st.caption(
-            "업로드 실수 정정. vendor·입고일·hardware_version·serial 은 장착 중이어도 수정 가능, "
+            "업로드 실수 정정. vendor·입고일·hardware_version·module_serial 은 장착 중이어도 수정 가능, "
             "**종류(type)는 미장착일 때만** 수정 가능. 상태/장착은 여기서 못 바꾼다(장착/탈거는 '장비 정비')."
         )
         emods = q(
-            "SELECT id, serial, module_type, hardware_version, vendor_id, received_date, status "
-            "FROM modules ORDER BY serial"
+            "SELECT id, module_serial AS serial, module_type, hardware_version, vendor_id, received_date, status "
+            "FROM modules ORDER BY module_serial"
         )
         einfo = emods.set_index("id")
         emid = int(st.selectbox(
@@ -809,7 +809,7 @@ elif page == "모듈 현황 및 관리":
         if installed:
             st.info("현재 **장착 중** — 종류(type)는 수정 불가(현재 슬롯과 모순). 메타데이터만 정정.")
         c1, c2 = st.columns(2)
-        new_serial = c1.text_input("serial", value=er.serial, key="edit_serial")
+        new_serial = c1.text_input("module_serial", value=er.serial, key="edit_serial")
         if installed:
             c2.text_input("module_type (장착 중 — 잠김)", value=er.module_type, disabled=True)
             new_type = er.module_type
@@ -838,13 +838,13 @@ elif page == "모듈 현황 및 관리":
             if not ns:
                 st.error("serial 은 비울 수 없습니다.")
             elif ns != er.serial and not q(
-                "SELECT 1 FROM modules WHERE serial = ? AND id <> ?", (ns, emid)
+                "SELECT 1 FROM modules WHERE module_serial = ? AND id <> ?", (ns, emid)
             ).empty:
                 st.error(f"이미 존재하는 serial: {ns}")
             else:
                 chg = []
                 if ns != er.serial:
-                    chg.append(f"serial:{er.serial}→{ns}")
+                    chg.append(f"module_serial:{er.serial}→{ns}")
                 if new_type != er.module_type:
                     chg.append(f"type:{er.module_type}→{new_type}")
                 if (new_hw or "") != (er.hardware_version or ""):
@@ -854,7 +854,7 @@ elif page == "모듈 현황 및 관리":
                 if new_rcv.isoformat() != str(er.received_date)[:10]:
                     chg.append(f"received:{str(er.received_date)[:10]}→{new_rcv.isoformat()}")
                 write([
-                    ("UPDATE modules SET serial=?, module_type=?, hardware_version=?, vendor_id=?, "
+                    ("UPDATE modules SET module_serial=?, module_type=?, hardware_version=?, vendor_id=?, "
                      "received_date=?, rated_life=?, updated_at=?, updated_by=? WHERE id=?",
                      (ns, new_type, new_hw, new_vid, new_rcv.isoformat(), MODULE_TYPES[new_type],
                       now_iso(), actor, emid)),
@@ -869,8 +869,8 @@ elif page == "모듈 현황 및 관리":
             "정정용이며, 한 번이라도 장착/사용된 모듈은 이력 보존을 위해 status(scrapped 등)로만 관리한다."
         )
         dmods = q(
-            "SELECT id, serial, module_type, status, received_date FROM modules "
-            "WHERE id NOT IN (SELECT module_id FROM module_placements) ORDER BY serial"
+            "SELECT id, module_serial AS serial, module_type, status, received_date FROM modules "
+            "WHERE id NOT IN (SELECT module_id FROM module_placements) ORDER BY module_serial"
         )
         if dmods.empty:
             st.info("삭제 가능한 모듈이 없습니다(모두 장착/사용 이력 있음).")
@@ -900,10 +900,10 @@ elif page == "모듈 현황 및 관리":
             "(탈거는 '장비 정비'). 결과는 감사 로그에 남는다."
         )
         cand = q(
-            """SELECT id, serial, module_type, status FROM modules
+            """SELECT id, module_serial AS serial, module_type, status FROM modules
                WHERE status <> 'scrapped'
                  AND id NOT IN (SELECT module_id FROM module_placements WHERE valid_to IS NULL)
-               ORDER BY (status = 'faulty') DESC, serial"""
+               ORDER BY (status = 'faulty') DESC, module_serial"""
         )
         n_faulty = int((cand["status"] == "faulty").sum()) if not cand.empty else 0
         st.caption(f"미장착 처리 대상 {len(cand)}개 (faulty {n_faulty}개)")
@@ -945,17 +945,17 @@ elif page == "모듈 현황 및 관리":
             "— 행 컬럼(created/updated)이 못 잡는 삭제·중간 이력을 여기서 추적."
         )
         log = q(
-            "SELECT ts AS 시각, action AS 동작, serial, module_id, actor AS 작업자, detail AS 내용 "
+            "SELECT ts AS 시각, action AS 동작, module_serial, module_id, actor AS 작업자, detail AS 내용 "
             "FROM module_audit ORDER BY id DESC"
         )
         a1, a2 = st.columns([1, 2])
         f_act = a1.multiselect("동작", ["insert", "update", "delete"])
-        f_q = a2.text_input("serial / 작업자 검색", key="audit_q")
+        f_q = a2.text_input("module_serial / 작업자 검색", key="audit_q")
         v = log
         if f_act:
             v = v[v["동작"].isin(f_act)]
         if f_q:
-            v = v[v["serial"].str.contains(f_q, case=False, na=False)
+            v = v[v["module_serial"].str.contains(f_q, case=False, na=False)
                   | v["작업자"].str.contains(f_q, case=False, na=False)]
         st.caption(f"{len(v)} / {len(log)} 건")
         st.dataframe(v, width="stretch", hide_index=True)
@@ -965,7 +965,7 @@ elif page == "모듈 현황 및 관리":
         st.markdown("#### 정책적으로 막힌 행동 (이 화면에서 강제)")
         st.table(pd.DataFrame([
             {"행동": "장착·사용된 모듈 삭제", "결과": "❌ 차단", "사유": "이력 보존 — 폐기는 status=scrapped 로만"},
-            {"행동": "이미 있는 serial 추가/정정", "결과": "❌ 차단", "사유": "serial 전역 유니크"},
+            {"행동": "이미 있는 module_serial 추가/정정", "결과": "❌ 차단", "사유": "module_serial 전역 유니크"},
             {"행동": "미등록 벤더로 입고", "결과": "❌ 차단", "사유": "vendor 외부 마스터에 없는 값"},
             {"행동": "벌크 동일 파일 재업로드", "결과": "❌ 차단", "사유": "upload_batch.file_hash 중복"},
             {"행동": "벌크 일부 행 오류", "결과": "❌ 전체 취소", "사유": "all-or-nothing (거부행 리포트)"},
@@ -978,10 +978,10 @@ elif page == "모듈 현황 및 관리":
         # 모듈 선택 라벨에 현재 위치(🔧 장착·장비 / 📦 미장착·상태)를 같이 보여준다 — 장착/미장착을
         # 헷갈리지 않도록(예: 폐기된 SN-BG-0002 는 미장착이라 종류 변경이 허용된다).
         simm = q(
-            """SELECT m.id, m.serial, m.module_type, m.status, p.name AS dev
+            """SELECT m.id, m.module_serial AS serial, m.module_type, m.status, p.name AS dev
                FROM modules m
                LEFT JOIN module_placements op ON op.module_id = m.id AND op.valid_to IS NULL
-               LEFT JOIN products p ON p.id = op.product_id ORDER BY m.serial"""
+               LEFT JOIN products p ON p.id = op.product_id ORDER BY m.module_serial"""
         )
         sinfo = simm.set_index("id")
 
@@ -992,7 +992,7 @@ elif page == "모듈 현황 및 관리":
 
         scenario = st.radio("시나리오", [
             "장착·사용된 모듈 삭제",
-            "이미 있는 serial 로 추가",
+            "이미 있는 module_serial 로 추가",
             "미등록 벤더로 입고",
             "장착 중 모듈의 종류(type) 변경",
         ], key="sim_scenario")
@@ -1005,11 +1005,11 @@ elif page == "모듈 현황 및 관리":
                 else:
                     st.success(f"✅ 허용: {sinfo.loc[sid, 'serial']} 는 미장착·미사용 → 삭제 가능.")
 
-        elif scenario == "이미 있는 serial 로 추가":
-            ex = q("SELECT serial FROM modules ORDER BY serial LIMIT 1").serial[0]
-            s = st.text_input("추가할 serial", value=ex, key="sim_serial")
+        elif scenario == "이미 있는 module_serial 로 추가":
+            ex = q("SELECT module_serial AS serial FROM modules ORDER BY module_serial LIMIT 1").serial[0]
+            s = st.text_input("추가할 module_serial", value=ex, key="sim_serial")
             if st.button("추가 시도", key="sim_serial_btn"):
-                if not q("SELECT 1 FROM modules WHERE serial = ?", (s.strip(),)).empty:
+                if not q("SELECT 1 FROM modules WHERE module_serial = ?", (s.strip(),)).empty:
                     st.error(f"❌ 차단: '{s}' 는 이미 존재 (serial 전역 유니크).")
                 else:
                     st.success(f"✅ 허용: '{s}' 는 신규 serial → 추가 가능.")
@@ -1197,7 +1197,7 @@ elif page == "장비 정비":
     ]))
     st.subheader("반영 결과 — 이 장비의 설치/교체 이력")
     h = q(
-        """SELECT mp.position_code AS "모듈 종류", m.serial AS 시리얼, mp.valid_from AS 설치,
+        """SELECT mp.position_code AS "모듈 종류", m.module_serial AS 시리얼, mp.valid_from AS 설치,
                   mp.valid_to AS 탈거, mp.removed_reason AS 탈거사유, mp.fault_mode AS 고장모드
            FROM module_placements mp JOIN modules m ON m.id = mp.module_id
            WHERE mp.product_id = ? ORDER BY mp.valid_from, mp.position_code""",

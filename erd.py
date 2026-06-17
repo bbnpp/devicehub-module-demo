@@ -26,7 +26,7 @@ LINE = "#7d8893"
 # 테이블 정의: name -> (category, x, y, [(type, column)])  type: pk|num|text|ts
 TABLES: dict[str, dict] = {
     "modules": dict(cat="new", x=60, y=80, cols=[
-        ("pk", "id"), ("text", "serial"), ("text", "module_type"),
+        ("pk", "id"), ("text", "module_serial"), ("text", "module_type"),
         ("text", "hardware_version"), ("num", "vendor_id"), ("ts", "received_date"),
         ("num", "batch_id"), ("text", "status"), ("num", "rated_life"),
         ("ts", "created_at"), ("text", "created_by"), ("ts", "updated_at"), ("text", "updated_by")]),
@@ -36,7 +36,7 @@ TABLES: dict[str, dict] = {
         ("pk", "id"), ("text", "file_hash"), ("text", "source_name"),
         ("ts", "uploaded_at"), ("num", "row_count")]),
     "module_audit": dict(cat="new", x=440, y=400, cols=[
-        ("pk", "id"), ("num", "module_id"), ("text", "serial"),
+        ("pk", "id"), ("num", "module_id"), ("text", "module_serial"),
         ("text", "action"), ("text", "detail"), ("text", "actor"), ("ts", "ts")]),
     "module_placements": dict(cat="new", x=440, y=80, cols=[
         ("pk", "id"), ("num", "module_id"), ("num", "product_id"),
@@ -55,7 +55,7 @@ TABLES: dict[str, dict] = {
 DESCRIPTIONS: dict[str, dict[str, str]] = {
     "modules": {
         "id": "내부 PK(서러게이트)",
-        "serial": "모듈 시리얼번호 — 전역 유니크",
+        "module_serial": "모듈 시리얼번호(module_serial) — 전역 유니크",
         "module_type": "모듈 종류(=슬롯 위치)",
         "hardware_version": "하드웨어 버전(기록용, 예: 1.2/1.3) — 장착 판정엔 미반영",
         "vendor_id": "공급사 FK → vendor.id",
@@ -83,7 +83,7 @@ DESCRIPTIONS: dict[str, dict[str, str]] = {
     "module_audit": {
         "id": "PK(자동증가)",
         "module_id": "대상 모듈 id — FK 아님(삭제돼도 감사행 보존)",
-        "serial": "당시 시리얼 스냅샷",
+        "module_serial": "당시 모듈 시리얼 스냅샷",
         "action": "insert / update / delete",
         "detail": "변경 내용 요약",
         "actor": "작업자",
